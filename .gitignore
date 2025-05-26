@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+.GOOGLE_SCRIPT_HOST
+.GOOGLE_SCRIPT_PATH
+.ERA_AUTH_TOKEN

@@ -35,13 +35,11 @@
 // Khai báo chân kết nối cảm biến vân tay
 #define FINGERPRINT_RX_PIN 16
 #define FINGERPRINT_TX_PIN 17
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 
 #include <Arduino.h>
 #include <ERa.hpp>
 #include <Adafruit_Fingerprint.h>
-
+#include <WiFiClientSecure.h>
 const char ssid[] = "eoh.io";
 const char pass[] = "Eoh@2020";
 
@@ -179,31 +177,35 @@ HardwareSerial mySerial(1);
 
 // Khởi tạo đối tượng Adafruit_Fingerprint
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
+
 // define Google Script
-const char *GOOGLE_SCRIPT_URL = "https://script.google.com/...";
+const char *GOOGLE_SCRIPT_HOST = "script.google.com";
+const char *GOOGLE_SCRIPT_PATH = "/macros/s/AKfycbzGK4ZjPJ2sGRgtomSgY2NvdqyUXxt4BubWoxK-NzxRWeupqlEA33jgtxRW98Yp9ge1sQ/exec";
+
 void sendToGoogleSheet(int id, const char *time, const char *date)
 {
   WiFiClientSecure client;
-  client.setInsecure(); // Bỏ qua xác thực SSL (nếu cần)
+  client.setInsecure(); 
 
   // Tạo payload JSON
   String payload = "{\"time\":\"" + String(time) + "\",\"id\":\"" + String(id) + "\",\"date\":\"" + String(date) + "\"}";
 
   // Tạo HTTP request thủ công
   String request =
-      "POST " + String(GOOGLE_SCRIPT_URL_PATH) + " HTTP/1.1\r\n" + // Thay thế GOOGLE_SCRIPT_URL_PATH bằng phần path của URL
-      "Host: script.google.com\r\n" +
+      "POST " + String(GOOGLE_SCRIPT_PATH) + " HTTP/1.1\r\n" +
+      "Host: " + GOOGLE_SCRIPT_HOST + "\r\n" +
       "Content-Type: application/json\r\n" +
       "Content-Length: " + String(payload.length()) + "\r\n" +
       "Connection: close\r\n\r\n" +
       payload;
 
   // Kết nối và gửi request
-  if (client.connect("script.google.com", 443))
+  if (client.connect(GOOGLE_SCRIPT_HOST, 443))
   {
     client.print(request);
-    Serial.println("Data sent to Google Sheet!");
-    // Đọc phản hồi (tùy chọn)
+    Serial.println("[HTTP] Data sent to Google Sheet!");
+
+    // Đọc phản hồi (debug)
     while (client.connected())
     {
       String line = client.readStringUntil('\n');
@@ -215,7 +217,7 @@ void sendToGoogleSheet(int id, const char *time, const char *date)
   }
   else
   {
-    Serial.println("Connection to Google failed!");
+    Serial.println("[HTTP] Connection to Google failed!");
   }
   client.stop();
 }
