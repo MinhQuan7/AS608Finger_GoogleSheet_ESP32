@@ -1,4 +1,3 @@
-
 /*************************************************************
   Download latest ERa library here:
     https://github.com/eoh-jsc/era-lib/releases/latest
@@ -32,14 +31,23 @@
 // If it's set to true, the configuration will be erased.
 #define ERA_ERASE_CONFIG false
 #endif
+
 // Khai báo chân kết nối cảm biến vân tay
 #define FINGERPRINT_RX_PIN 16
 #define FINGERPRINT_TX_PIN 17
+
+// Cấu hình xác thực vân tay nâng cao
+#define CONFIDENCE_THRESHOLD 80 // Ngưỡng độ tin cậy tối thiểu
+#define SAMPLING_DURATION 2000  // Thời gian lấy mẫu (2 giây)
+#define MIN_SAMPLES 3           // Số mẫu tối thiểu
+#define MAX_SAMPLES 10          // Số mẫu tối đa
+#define SAMPLE_INTERVAL 200     // Khoảng cách giữa các mẫu (ms)
 
 #include <Arduino.h>
 #include <ERa.hpp>
 #include <Adafruit_Fingerprint.h>
 #include <WiFiClientSecure.h>
+
 const char ssid[] = "eoh.io";
 const char pass[] = "Eoh@2020";
 
@@ -161,6 +169,7 @@ void initButton()
 }
 #endif
 #endif
+
 /* This function will run every time ERa is connected */
 ERA_CONNECTED()
 {
@@ -172,6 +181,7 @@ ERA_DISCONNECTED()
 {
   ERA_LOG(ERA_PSTR("ERa"), ERA_PSTR("ERa disconnected!"));
 }
+
 // Khởi tạo đối tượng HardwareSerial
 HardwareSerial mySerial(1);
 
@@ -182,10 +192,23 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 const char *GOOGLE_SCRIPT_HOST = "script.google.com";
 const char *GOOGLE_SCRIPT_PATH = "/macros/s/AKfycbzGK4ZjPJ2sGRgtomSgY2NvdqyUXxt4BubWoxK-NzxRWeupqlEA33jgtxRW98Yp9ge1sQ/exec";
 
+// Cấu trúc để lưu thông tin xác thực
+struct FingerprintAuth
+{
+  uint16_t id;
+  uint16_t confidence;
+  bool isValid;
+};
+
+// Biến toàn cục để tránh gửi duplicate
+static uint16_t lastValidatedID = 0;
+static unsigned long lastValidationTime = 0;
+static bool authenticationInProgress = false;
+
 void sendToGoogleSheet(int id, const char *time, const char *date)
 {
   WiFiClientSecure client;
-  client.setInsecure(); 
+  client.setInsecure();
 
   // Tạo payload JSON
   String payload = "{\"time\":\"" + String(time) + "\",\"id\":\"" + String(id) + "\",\"date\":\"" + String(date) + "\"}";
@@ -222,121 +245,155 @@ void sendToGoogleSheet(int id, const char *time, const char *date)
   client.stop();
 }
 
-uint8_t getFingerprintID()
+// Hàm lấy một mẫu vân tay duy nhất
+FingerprintAuth getSingleFingerprintSample()
 {
-  uint8_t p = finger.getImage();
-  switch (p)
-  {
-  case FINGERPRINT_OK:
-    Serial.println("Image taken");
-    break;
-  case FINGERPRINT_NOFINGER:
-    Serial.println("No finger detected");
-    return p;
-  case FINGERPRINT_PACKETRECIEVEERR:
-    Serial.println("Communication error");
-    return p;
-  case FINGERPRINT_IMAGEFAIL:
-    Serial.println("Imaging error");
-    return p;
-  default:
-    Serial.println("Unknown error");
-    return p;
-  }
+  FingerprintAuth result = {0, 0, false};
 
-  // OK success!
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK)
+  {
+    return result;
+  }
 
   p = finger.image2Tz();
-  switch (p)
+  if (p != FINGERPRINT_OK)
   {
-  case FINGERPRINT_OK:
-    Serial.println("Image converted");
-    break;
-  case FINGERPRINT_IMAGEMESS:
-    Serial.println("Image too messy");
-    return p;
-  case FINGERPRINT_PACKETRECIEVEERR:
-    Serial.println("Communication error");
-    return p;
-  case FINGERPRINT_FEATUREFAIL:
-    Serial.println("Could not find fingerprint features");
-    return p;
-  case FINGERPRINT_INVALIDIMAGE:
-    Serial.println("Could not find fingerprint features");
-    return p;
-  default:
-    Serial.println("Unknown error");
-    return p;
+    return result;
   }
 
-  // OK converted!
-  p = finger.fingerSearch();
+  p = finger.fingerFastSearch();
   if (p == FINGERPRINT_OK)
   {
-    Serial.println("Found a print match!");
+    result.id = finger.fingerID;
+    result.confidence = finger.confidence;
+    result.isValid = true;
+
+    Serial.printf("[SAMPLE] ID: %d, Confidence: %d\n", result.id, result.confidence);
   }
-  else if (p == FINGERPRINT_PACKETRECIEVEERR)
+
+  return result;
+}
+
+// Hàm xác thực vân tay nâng cao với lấy mẫu và đánh giá độ tin cậy
+FingerprintAuth authenticateFingerprint()
+{
+  Serial.println("[AUTH] Starting enhanced fingerprint authentication...");
+
+  FingerprintAuth finalResult = {0, 0, false};
+
+  // Mảng lưu các mẫu hợp lệ
+  struct
   {
-    Serial.println("Communication error");
-    return p;
+    uint16_t id;
+    uint16_t confidence;
+  } samples[MAX_SAMPLES];
+
+  int validSamples = 0;
+  unsigned long startTime = millis();
+  unsigned long lastSampleTime = 0;
+
+  // Lấy mẫu trong khoảng thời gian quy định
+  while ((millis() - startTime) < SAMPLING_DURATION && validSamples < MAX_SAMPLES)
+  {
+
+    // Chỉ lấy mẫu sau khoảng cách thời gian nhất định
+    if (millis() - lastSampleTime >= SAMPLE_INTERVAL)
+    {
+      FingerprintAuth sample = getSingleFingerprintSample();
+
+      if (sample.isValid)
+      {
+        samples[validSamples].id = sample.id;
+        samples[validSamples].confidence = sample.confidence;
+        validSamples++;
+        lastSampleTime = millis();
+
+        Serial.printf("[AUTH] Sample %d: ID=%d, Confidence=%d\n",
+                      validSamples, sample.id, sample.confidence);
+      }
+    }
+
+    delay(50); // Tránh spam quá nhanh
   }
-  else if (p == FINGERPRINT_NOTFOUND)
+
+  // Kiểm tra xem có đủ mẫu không
+  if (validSamples < MIN_SAMPLES)
   {
-    Serial.println("Did not find a match");
-    return p;
+    Serial.printf("[AUTH] Insufficient samples: %d (minimum %d required)\n",
+                  validSamples, MIN_SAMPLES);
+    return finalResult;
+  }
+
+  // Phân tích các mẫu để tìm ID phổ biến nhất
+  uint16_t mostCommonID = 0;
+  int maxCount = 0;
+  uint32_t totalConfidence = 0;
+  int countForMostCommon = 0;
+
+  // Đếm tần suất xuất hiện của từng ID
+  for (int i = 0; i < validSamples; i++)
+  {
+    int count = 0;
+    uint32_t confidenceSum = 0;
+
+    for (int j = 0; j < validSamples; j++)
+    {
+      if (samples[j].id == samples[i].id)
+      {
+        count++;
+        confidenceSum += samples[j].confidence;
+      }
+    }
+
+    if (count > maxCount)
+    {
+      maxCount = count;
+      mostCommonID = samples[i].id;
+      totalConfidence = confidenceSum;
+      countForMostCommon = count;
+    }
+  }
+
+  // Tính độ tin cậy trung bình cho ID phổ biến nhất
+  uint16_t avgConfidence = totalConfidence / countForMostCommon;
+
+  Serial.printf("[AUTH] Analysis: ID=%d appeared %d/%d times, Avg Confidence=%d\n",
+                mostCommonID, maxCount, validSamples, avgConfidence);
+
+  // Kiểm tra các điều kiện xác thực
+  bool isConsistent = (maxCount >= (validSamples * 0.6)); // Ít nhất 60% mẫu cùng ID
+  bool isConfident = (avgConfidence >= CONFIDENCE_THRESHOLD);
+
+  if (isConsistent && isConfident)
+  {
+    finalResult.id = mostCommonID;
+    finalResult.confidence = avgConfidence;
+    finalResult.isValid = true;
+
+    Serial.printf("[AUTH] ✓ AUTHENTICATED: ID=%d, Confidence=%d\n",
+                  finalResult.id, finalResult.confidence);
   }
   else
   {
-    Serial.println("Unknown error");
-    return p;
+    Serial.printf("[AUTH] ✗ FAILED: Consistent=%s, Confident=%s\n",
+                  isConsistent ? "YES" : "NO",
+                  isConfident ? "YES" : "NO");
   }
 
-  // found a match!
-  Serial.print("Found ID #");
-  Serial.print(finger.fingerID);
-
-  Serial.print(" with confidence of ");
-  Serial.println(finger.confidence);
-  // Tạo chuỗi động dựa trên ID tìm được
-  String idString = "ID" + String(finger.fingerID);
-
-  // Gửi chuỗi lên E-Ra platform (PHẢI sử dụng .c_str())
-  ERa.virtualWrite(V0, idString.c_str());
-
-  return finger.fingerID;
+  return finalResult;
 }
 
-// returns -1 if failed, otherwise returns ID #
-int getFingerprintIDez()
+// Hàm xử lý khi có vân tay được xác thực thành công
+void handleAuthenticatedFingerprint(FingerprintAuth auth)
 {
-  uint8_t p = finger.getImage();
-  if (p != FINGERPRINT_OK)
-    return -1;
-
-  p = finger.image2Tz();
-  if (p != FINGERPRINT_OK)
-    return -1;
-
-  p = finger.fingerFastSearch();
-  if (p != FINGERPRINT_OK)
-    return -1;
-
-  // found a match!
-  Serial.print("Found ID #");
-  Serial.print(finger.fingerID);
-  Serial.print(" with confidence of ");
-  Serial.println(finger.confidence);
-  return finger.fingerID;
-}
-
-/* This function print uptime every second */
-void timerEvent()
-{
-  ERA_LOG(ERA_PSTR("Timer"), ERA_PSTR("Uptime: %d"), ERaMillis() / 1000L);
-  static unsigned long lastTime = 0;
-  if (millis() - lastTime < 1000)
-    return; // Gửi mỗi 1 giây
-  lastTime = millis();
+  // Tránh gửi duplicate trong thời gian ngắn
+  if (auth.id == lastValidatedID &&
+      (millis() - lastValidationTime) < 5000)
+  { // 5 giây cooldown
+    Serial.println("[SKIP] Same fingerprint within cooldown period");
+    return;
+  }
 
   // Lấy thời gian từ NTP
   syncTime.getTime(ntpTime);
@@ -348,23 +405,59 @@ void timerEvent()
   char dateStr[12];
   sprintf(dateStr, "%02d/%02d/%04d", ntpTime.day, ntpTime.month, ntpTime.year + 1970);
 
-  getFingerprintID();
-  // Gọi hàm đọc vân tay
-  uint8_t result = getFingerprintID();
+  // Gửi ID lên E-Ra platform
+  String idString = "ID" + String(auth.id);
+  ERa.virtualWrite(V0, idString.c_str());
 
-  if (result != FINGERPRINT_NOFINGER)
+  // Gửi dữ liệu lên Google Sheet
+  sendToGoogleSheet(auth.id, timeStr, dateStr);
+
+  // Cập nhật trạng thái
+  lastValidatedID = auth.id;
+  lastValidationTime = millis();
+
+  Serial.printf("[SUCCESS] Processed fingerprint: ID=%d, Time=%s, Date=%s, Confidence=%d\n",
+                auth.id, timeStr, dateStr, auth.confidence);
+}
+
+/* This function print uptime every second */
+void timerEvent()
+{
+  ERA_LOG(ERA_PSTR("Timer"), ERA_PSTR("Uptime: %d"), ERaMillis() / 1000L);
+
+  // Tránh chạy song song nhiều quá trình xác thực
+  if (authenticationInProgress)
   {
-    // Gửi ID dạng số lên E-Ra
-    ERa.virtualWrite(V0, finger.fingerID);
-
-    // In log để debug
-    Serial.print("Sent ID to E-Ra: ");
-    Serial.println(finger.fingerID);
-    uint8_t id = finger.fingerID;
-    sendToGoogleSheet(id, timeStr, dateStr);
-
-    Serial.printf("Sent: ID%d | Time: %s | Date: %s\n", id, timeStr, dateStr);
+    return;
   }
+
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < 500)
+  { // Kiểm tra mỗi 500ms
+    return;
+  }
+  lastCheck = millis();
+
+  // Kiểm tra nhanh xem có ngón tay không
+  uint8_t p = finger.getImage();
+  if (p == FINGERPRINT_NOFINGER)
+  {
+    return; // Không có ngón tay, thoát
+  }
+
+  // Có ngón tay, bắt đầu quá trình xác thực nâng cao
+  authenticationInProgress = true;
+
+  FingerprintAuth result = authenticateFingerprint();
+
+  if (result.isValid)
+  {
+    handleAuthenticatedFingerprint(result);
+  }
+
+  // Chờ một chút để ngón tay rời khỏi sensor trước khi tiếp tục
+  delay(1000);
+  authenticationInProgress = false;
 }
 
 #if defined(USE_BASE_TIME)
@@ -406,54 +499,50 @@ void setup()
 
   /* Setup timer called function every second */
   ERa.addInterval(1000L, timerEvent);
-  Serial.println("Cảm biến vân tay AS608 với ESP32");
 
-  // Khởi tạo Serial để giao tiếp với máy tính
+  Serial.println("=== Enhanced Fingerprint Authentication System ===");
+  Serial.printf("Confidence Threshold: %d\n", CONFIDENCE_THRESHOLD);
+  Serial.printf("Sampling Duration: %d ms\n", SAMPLING_DURATION);
+  Serial.printf("Min/Max Samples: %d/%d\n", MIN_SAMPLES, MAX_SAMPLES);
+
+  // Khởi tạo Serial để giao tiếp với cảm biến vân tay
   mySerial.begin(57600, SERIAL_8N1, FINGERPRINT_RX_PIN, FINGERPRINT_TX_PIN);
   finger.begin(57600);
+
   // Khởi tạo cảm biến vân tay
   if (finger.verifyPassword())
   {
-    Serial.println("Found fingerprint sensor!");
+    Serial.println("✓ Found fingerprint sensor!");
   }
   else
   {
-    Serial.println("Did not find fingerprint sensor :(");
+    Serial.println("✗ Did not find fingerprint sensor :(");
     while (1)
     {
       delay(1);
     }
   }
 
-  Serial.println(F("Reading sensor parameters"));
+  Serial.println("Reading sensor parameters...");
   finger.getParameters();
-  Serial.print(F("Status: 0x"));
-  Serial.println(finger.status_reg, HEX);
-  Serial.print(F("Sys ID: 0x"));
-  Serial.println(finger.system_id, HEX);
-  Serial.print(F("Capacity: "));
-  Serial.println(finger.capacity);
-  Serial.print(F("Security level: "));
-  Serial.println(finger.security_level);
-  Serial.print(F("Device address: "));
-  Serial.println(finger.device_addr, HEX);
-  Serial.print(F("Packet len: "));
-  Serial.println(finger.packet_len);
-  Serial.print(F("Baud rate: "));
-  Serial.println(finger.baud_rate);
+  Serial.printf("Status: 0x%02X\n", finger.status_reg);
+  Serial.printf("Sys ID: 0x%02X\n", finger.system_id);
+  Serial.printf("Capacity: %d\n", finger.capacity);
+  Serial.printf("Security level: %d\n", finger.security_level);
+  Serial.printf("Device address: 0x%02X\n", finger.device_addr);
+  Serial.printf("Packet len: %d\n", finger.packet_len);
+  Serial.printf("Baud rate: %d\n", finger.baud_rate);
 
   finger.getTemplateCount();
 
   if (finger.templateCount == 0)
   {
-    Serial.print("Sensor doesn't contain any fingerprint data. Please run the 'enroll' example.");
+    Serial.println("⚠ Sensor doesn't contain any fingerprint data. Please enroll fingerprints first.");
   }
   else
   {
-    Serial.println("Waiting for valid finger...");
-    Serial.print("Sensor contains ");
-    Serial.print(finger.templateCount);
-    Serial.println(" templates");
+    Serial.printf("✓ Sensor contains %d fingerprint templates\n", finger.templateCount);
+    Serial.println("Ready for enhanced fingerprint authentication...");
   }
 }
 
