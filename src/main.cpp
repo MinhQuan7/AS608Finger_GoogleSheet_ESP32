@@ -36,13 +36,10 @@
 #define FINGERPRINT_RX_PIN 16
 #define FINGERPRINT_TX_PIN 17
 
-// Cấu hình xác thực vân tay nâng cao
-#define CONFIDENCE_THRESHOLD 70    // Ngưỡng độ tin cậy tối thiểu
-#define SAMPLING_DURATION 1500     // Thời gian lấy mẫu (1.5 giây)
-#define MIN_SAMPLES 2              // Số mẫu tối thiểu
-#define MAX_SAMPLES 8              // Số mẫu tối đa
-#define SAMPLE_INTERVAL 150        // Khoảng cách giữa các mẫu (ms)
-#define FINGER_DETECT_TIMEOUT 3000 // Timeout để phát hiện ngón tay liên tục
+// Cấu hình xác thực vân tay đơn giản và nhanh
+#define CONFIDENCE_THRESHOLD 60 // Ngưỡng độ tin cậy tối thiểu (thấp hơn)
+#define MAX_RETRY_ATTEMPTS 3    // Số lần thử tối đa trong 1 lần đặt tay
+#define RETRY_DELAY 100         // Delay giữa các lần thử (ms)
 
 #include <Arduino.h>
 #include <ERa.hpp>
@@ -276,164 +273,80 @@ FingerprintAuth getSingleFingerprintSample()
   return result;
 }
 
-// Hàm xác thực vân tay thông minh và linh hoạt
+// Hàm xác thực vân tay đơn giản và nhanh
 FingerprintAuth authenticateFingerprint()
 {
-  Serial.println("[AUTH] Starting smart fingerprint authentication...");
+  Serial.println("[AUTH] Quick fingerprint authentication...");
 
-  FingerprintAuth finalResult = {0, 0, false};
+  FingerprintAuth result = {0, 0, false};
 
-  // Mảng lưu các mẫu hợp lệ
-  struct
+  // Thử tối đa MAX_RETRY_ATTEMPTS lần
+  for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++)
   {
-    uint16_t id;
-    uint16_t confidence;
-  } samples[MAX_SAMPLES];
+    Serial.printf("[AUTH] Attempt %d/%d\n", attempt, MAX_RETRY_ATTEMPTS);
 
-  int validSamples = 0;
-  unsigned long startTime = millis();
-  unsigned long lastSampleTime = 0;
-  int consecutiveFailures = 0;
-
-  // Lấy mẫu trong khoảng thời gian quy định
-  while ((millis() - startTime) < SAMPLING_DURATION && validSamples < MAX_SAMPLES)
-  {
-
-    // Chỉ lấy mẫu sau khoảng cách thời gian nhất định
-    if (millis() - lastSampleTime >= SAMPLE_INTERVAL)
+    uint8_t p = finger.getImage();
+    if (p != FINGERPRINT_OK)
     {
-      FingerprintAuth sample = getSingleFingerprintSample();
-
-      if (sample.isValid)
+      Serial.printf("[AUTH] Get image failed: %d\n", p);
+      if (attempt < MAX_RETRY_ATTEMPTS)
       {
-        samples[validSamples].id = sample.id;
-        samples[validSamples].confidence = sample.confidence;
-        validSamples++;
-        lastSampleTime = millis();
-        consecutiveFailures = 0; // Reset failure counter
+        delay(RETRY_DELAY);
+        continue;
+      }
+      return result;
+    }
 
-        Serial.printf("[AUTH] Sample %d: ID=%d, Confidence=%d\n",
-                      validSamples, sample.id, sample.confidence);
+    p = finger.image2Tz();
+    if (p != FINGERPRINT_OK)
+    {
+      Serial.printf("[AUTH] Image2Tz failed: %d\n", p);
+      if (attempt < MAX_RETRY_ATTEMPTS)
+      {
+        delay(RETRY_DELAY);
+        continue;
+      }
+      return result;
+    }
 
-        // Nếu có ít nhất MIN_SAMPLES và confidence cao, có thể kết thúc sớm
-        if (validSamples >= MIN_SAMPLES && sample.confidence >= (CONFIDENCE_THRESHOLD + 20))
-        {
-          // Kiểm tra tính nhất quán nhanh
-          bool allSameID = true;
-          for (int i = 1; i < validSamples; i++)
-          {
-            if (samples[i].id != samples[0].id)
-            {
-              allSameID = false;
-              break;
-            }
-          }
-          if (allSameID)
-          {
-            Serial.println("[AUTH] High confidence samples detected, early exit");
-            break;
-          }
-        }
+    p = finger.fingerFastSearch();
+    if (p == FINGERPRINT_OK)
+    {
+      // Tìm thấy vân tay!
+      Serial.printf("[AUTH] ✓ Found ID: %d, Confidence: %d\n", finger.fingerID, finger.confidence);
+
+      // Kiểm tra confidence
+      if (finger.confidence >= CONFIDENCE_THRESHOLD)
+      {
+        result.id = finger.fingerID;
+        result.confidence = finger.confidence;
+        result.isValid = true;
+        Serial.printf("[AUTH] ✓ AUTHENTICATED: ID=%d, Confidence=%d\n", result.id, result.confidence);
+        return result;
       }
       else
       {
-        consecutiveFailures++;
-        // Nếu thất bại liên ti属 quá nhiều, có thể ngón tay đã rời khỏi
-        if (consecutiveFailures >= 3)
+        Serial.printf("[AUTH] Low confidence: %d < %d, retry...\n", finger.confidence, CONFIDENCE_THRESHOLD);
+        if (attempt < MAX_RETRY_ATTEMPTS)
         {
-          Serial.println("[AUTH] Too many consecutive failures, finger may be removed");
-          break;
+          delay(RETRY_DELAY);
+          continue;
         }
       }
     }
-
-    delay(30); // Giảm delay để responsive hơn
-  }
-
-  // Kiểm tra xem có đủ mẫu không
-  if (validSamples < MIN_SAMPLES)
-  {
-    Serial.printf("[AUTH] Insufficient samples: %d (minimum %d required)\n",
-                  validSamples, MIN_SAMPLES);
-    return finalResult;
-  }
-
-  // Nếu chỉ có 1 mẫu nhưng confidence rất cao, chấp nhận luôn
-  if (validSamples == 1 && samples[0].confidence >= (CONFIDENCE_THRESHOLD + 30))
-  {
-    Serial.printf("[AUTH] Single high-confidence sample accepted: ID=%d, Confidence=%d\n",
-                  samples[0].id, samples[0].confidence);
-    finalResult.id = samples[0].id;
-    finalResult.confidence = samples[0].confidence;
-    finalResult.isValid = true;
-    return finalResult;
-  }
-
-  // Phân tích các mẫu để tìm ID phổ biến nhất
-  uint16_t mostCommonID = samples[0].id; // Default to first sample
-  int maxCount = 1;
-  uint32_t totalConfidence = samples[0].confidence;
-  int countForMostCommon = 1;
-
-  // Đếm tần suất xuất hiện của từng ID
-  for (int i = 0; i < validSamples; i++)
-  {
-    int count = 0;
-    uint32_t confidenceSum = 0;
-
-    for (int j = 0; j < validSamples; j++)
+    else
     {
-      if (samples[j].id == samples[i].id)
+      Serial.printf("[AUTH] Fingerprint search failed: %d\n", p);
+      if (attempt < MAX_RETRY_ATTEMPTS)
       {
-        count++;
-        confidenceSum += samples[j].confidence;
+        delay(RETRY_DELAY);
+        continue;
       }
     }
-
-    if (count > maxCount || (count == maxCount && confidenceSum > totalConfidence))
-    {
-      maxCount = count;
-      mostCommonID = samples[i].id;
-      totalConfidence = confidenceSum;
-      countForMostCommon = count;
-    }
   }
 
-  // Tính độ tin cậy trung bình cho ID phổ biến nhất
-  uint16_t avgConfidence = totalConfidence / countForMostCommon;
-
-  Serial.printf("[AUTH] Analysis: ID=%d appeared %d/%d times, Avg Confidence=%d\n",
-                mostCommonID, maxCount, validSamples, avgConfidence);
-
-  // Kiểm tra các điều kiện xác thực (linh hoạt hơn)
-  float consistencyRatio = (float)maxCount / validSamples;
-  bool isConsistent = (consistencyRatio >= 0.5); // Ít nhất 50% mẫu cùng ID
-  bool isConfident = (avgConfidence >= CONFIDENCE_THRESHOLD);
-
-  // Điều kiện đặc biệt: nếu có 2 mẫu cùng ID và confidence cao
-  if (validSamples == 2 && maxCount == 2 && avgConfidence >= (CONFIDENCE_THRESHOLD + 10))
-  {
-    isConsistent = true;
-    isConfident = true;
-  }
-
-  if (isConsistent && isConfident)
-  {
-    finalResult.id = mostCommonID;
-    finalResult.confidence = avgConfidence;
-    finalResult.isValid = true;
-
-    Serial.printf("[AUTH] ✓ AUTHENTICATED: ID=%d, Confidence=%d, Consistency=%.1f%%\n",
-                  finalResult.id, finalResult.confidence, consistencyRatio * 100);
-  }
-  else
-  {
-    Serial.printf("[AUTH] ✗ FAILED: Consistent=%s (%.1f%%), Confident=%s (%d>=%d)\n",
-                  isConsistent ? "YES" : "NO", consistencyRatio * 100,
-                  isConfident ? "YES" : "NO", avgConfidence, CONFIDENCE_THRESHOLD);
-  }
-
-  return finalResult;
+  Serial.println("[AUTH] ✗ Authentication failed after all attempts");
+  return result;
 }
 
 // Hàm xử lý khi có vân tay được xác thực thành công
@@ -472,7 +385,7 @@ void handleAuthenticatedFingerprint(FingerprintAuth auth)
                 auth.id, timeStr, dateStr, auth.confidence);
 }
 
-/* This function print uptime every second */
+/* This function handles fingerprint detection and authentication */
 void timerEvent()
 {
   ERA_LOG(ERA_PSTR("Timer"), ERA_PSTR("Uptime: %d"), ERaMillis() / 1000L);
@@ -484,25 +397,22 @@ void timerEvent()
   }
 
   static unsigned long lastCheck = 0;
-  if (millis() - lastCheck < 800)
-  { // Kiểm tra mỗi 800ms (chậm hơn)
+  if (millis() - lastCheck < 1000)
+  { // Kiểm tra mỗi 1 giây
     return;
   }
   lastCheck = millis();
 
-  // Kiểm tra nhanh xem có ngón tay không (2 lần để chắc chắn)
-  uint8_t p1 = finger.getImage();
-  delay(50);
-  uint8_t p2 = finger.getImage();
-
-  if (p1 == FINGERPRINT_NOFINGER && p2 == FINGERPRINT_NOFINGER)
+  // Kiểm tra nhanh xem có ngón tay không
+  uint8_t p = finger.getImage();
+  if (p == FINGERPRINT_NOFINGER)
   {
-    return; // Chắc chắn không có ngón tay, thoát
+    return; // Không có ngón tay, thoát
   }
 
-  Serial.println("[DETECT] Finger detected, starting authentication...");
+  Serial.println("[DETECT] Finger detected!");
 
-  // Có ngón tay, bắt đầu quá trình xác thực nâng cao
+  // Có ngón tay, bắt đầu quá trình xác thực ngay
   authenticationInProgress = true;
 
   FingerprintAuth result = authenticateFingerprint();
@@ -511,29 +421,10 @@ void timerEvent()
   {
     handleAuthenticatedFingerprint(result);
   }
-  else
-  {
-    Serial.println("[AUTH] Authentication failed, waiting for next attempt...");
-  }
 
-  // Chờ ngón tay rời khỏi sensor trước khi tiếp tục
-  Serial.println("[WAIT] Please remove finger...");
-  unsigned long waitStart = millis();
-  while (millis() - waitStart < 2000)
-  { // Chờ tối đa 2 giây
-    if (finger.getImage() == FINGERPRINT_NOFINGER)
-    {
-      delay(200); // Chờ thêm một chút để chắc chắn
-      if (finger.getImage() == FINGERPRINT_NOFINGER)
-      {
-        break; // Ngón tay đã rời khỏi
-      }
-    }
-    delay(100);
-  }
-
+  // Chờ một chút để tránh trigger liên tục
+  delay(2000);
   authenticationInProgress = false;
-  Serial.println("[READY] Ready for next authentication");
 }
 
 #if defined(USE_BASE_TIME)
@@ -576,10 +467,9 @@ void setup()
   /* Setup timer called function every second */
   ERa.addInterval(1000L, timerEvent);
 
-  Serial.println("=== Enhanced Fingerprint Authentication System ===");
+  Serial.println("=== Simple & Fast Fingerprint System ===");
   Serial.printf("Confidence Threshold: %d\n", CONFIDENCE_THRESHOLD);
-  Serial.printf("Sampling Duration: %d ms\n", SAMPLING_DURATION);
-  Serial.printf("Min/Max Samples: %d/%d\n", MIN_SAMPLES, MAX_SAMPLES);
+  Serial.printf("Max Retry Attempts: %d\n", MAX_RETRY_ATTEMPTS);
 
   // Khởi tạo Serial để giao tiếp với cảm biến vân tay
   mySerial.begin(57600, SERIAL_8N1, FINGERPRINT_RX_PIN, FINGERPRINT_TX_PIN);
