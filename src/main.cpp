@@ -40,7 +40,9 @@
 #define CONFIDENCE_THRESHOLD 60 // Ngưỡng độ tin cậy tối thiểu (thấp hơn)
 #define MAX_RETRY_ATTEMPTS 3    // Số lần thử tối đa trong 1 lần đặt tay
 #define RETRY_DELAY 100         // Delay giữa các lần thử (ms)
-
+unsigned long int currentTimeOpen = 0;
+const int timedoorInterval = 5000;
+bool isopenDoor = false;
 #include <Arduino.h>
 #include <ERa.hpp>
 #include <Adafruit_Fingerprint.h>
@@ -189,7 +191,7 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 // define Google Script
 const char *GOOGLE_SCRIPT_HOST = "script.google.com";
 const char *GOOGLE_SCRIPT_PATH = "/macros/s/AKfycbzGK4ZjPJ2sGRgtomSgY2NvdqyUXxt4BubWoxK-NzxRWeupqlEA33jgtxRW98Yp9ge1sQ/exec";
-
+#define RELAY_PIN 14
 // Cấu trúc để lưu thông tin xác thực
 struct FingerprintAuth
 {
@@ -318,6 +320,9 @@ FingerprintAuth authenticateFingerprint()
       // Kiểm tra confidence
       if (finger.confidence >= CONFIDENCE_THRESHOLD)
       {
+        ERa.virtualWrite(V1, HIGH);
+        isopenDoor = true;
+        currentTimeOpen = millis();
         result.id = finger.fingerID;
         result.confidence = finger.confidence;
         result.isValid = true;
@@ -346,6 +351,7 @@ FingerprintAuth authenticateFingerprint()
   }
 
   Serial.println("[AUTH] ✗ Authentication failed after all attempts");
+  ERa.virtualWrite(V1, LOW);
   return result;
 }
 
@@ -435,6 +441,12 @@ unsigned long getTimeCallback()
   return 0;
 }
 #endif
+ERA_WRITE(V1)
+{
+  /* Get value from Virtual Pin 0 and write LED */
+  uint8_t value = param.getInt();
+  digitalWrite(RELAY_PIN, value ? HIGH : LOW);
+}
 
 void setup()
 {
@@ -456,7 +468,7 @@ void setup()
 
   /* Setup Client for Modbus TCP/IP */
   ERa.setModbusClient(mbTcpClient);
-
+  pinMode(RELAY_PIN, OUTPUT);
   /* Set scan WiFi. If activated, the board will scan
      and connect to the best quality WiFi. */
   ERa.setScanWiFi(true);
@@ -515,4 +527,12 @@ void setup()
 void loop()
 {
   ERa.run();
+  if (isopenDoor)
+  {
+    if (millis() - currentTimeOpen >= timedoorInterval)
+    {
+      ERa.virtualWrite(V1, LOW);
+      isopenDoor = false;
+    }
+  }
 }
