@@ -1,4 +1,4 @@
-# 🚀 Welcome to My IoT Force | Embedded | AI Project Collection
+# 🚀 Welcome to IoT Force | Embedded | AI Project Collection
 
 Chào mừng bạn đến với kho tài nguyên **miễn phí** về các dự án liên quan đến **IoT, Embedded Systems, và AI**. Tất cả đều được chia sẻ **KHÔNG THƯƠNG MẠI** nhằm hỗ trợ các bạn sinh viên, kỹ sư và người đam mê công nghệ!
 
