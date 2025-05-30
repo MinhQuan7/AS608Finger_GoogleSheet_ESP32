@@ -212,7 +212,7 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
 // Define Google Script
 const char *GOOGLE_SCRIPT_HOST = "script.google.com";
-const char *GOOGLE_SCRIPT_PATH = "/macros/s/AKfycbzGK4ZjPJ2sGRgtomSgY2NvdqyUXxt4BubWoxK-NzxRWeupqlEA33jgtxRW98Yp9ge1sQ/exec";
+const char *GOOGLE_SCRIPT_PATH = "/macros/s/__________/exec";
 #define RELAY_PIN 18
 
 // Structure to store authentication information
