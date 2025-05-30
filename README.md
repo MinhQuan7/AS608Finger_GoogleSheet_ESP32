@@ -1,7 +1,9 @@
 # 🚀 Welcome to IoT Force | Embedded | AI Project Collection
 
-Chào mừng bạn đến với kho tài nguyên **miễn phí** về các dự án liên quan đến **IoT**, **Embedded Systems**, và **AI**.  
-Tất cả đều được chia sẻ **phi thương mại** nhằm hỗ trợ các bạn sinh viên, kỹ sư và cộng đồng đam mê công nghệ!
+#### Chào mừng bạn đến với kho tài nguyên **miễn phí** về các dự án liên quan đến **IoT**, **Embedded Systems**, và **AI**.  
+#### Tất cả đều được chia sẻ **phi thương mại** nhằm hỗ trợ các bạn sinh viên, kỹ sư và cộng đồng đam mê công nghệ!
+#### NẾU CÁC BẠN ĐÃ CÀI PLATFORM IO THÌ CHỈ CẦN DOWN VỀ => Vô VScode => File => Open Folder (Chọn folder source code bạn mới tải)=> Đợi khoảng 45 giây để Vscode Install thư viện cần thiết và các packages khác.
+#### Nếu chưa bạn cài Platform IO : Bạn tham khảo video sau : 👉 [YouTube Channel](https://www.youtube.com/watch?v=FuLRXgD9C2s)
 
 ---
 
